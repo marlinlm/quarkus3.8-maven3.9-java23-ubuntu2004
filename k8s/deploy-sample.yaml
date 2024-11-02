@@ -1,0 +1,103 @@
+# 手动创建pv，一般情况下不需要
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: linmao-python-dev-pv                #!!!必须改成自己的名称，要不然会修改到别人的PV
+spec:
+  capacity:
+    storage: 40Gi                            
+  volumeMode: Filesystem                     
+  accessModes:
+    - ReadWriteOnce                          
+  persistentVolumeReclaimPolicy: Retain      
+  storageClassName: managed-nfs-storage      #必须和创建的storage class名字一致，也要与PVC保持一致，否则无法完成绑定
+  nfs:                                       #指定NFS共享目录和IP信息
+    path: /data/nfs-share/linmao-python-dev-pv1
+    server: 10.120.35.200
+---
+# 创建PVC，请注意把PVC修改成自己的名字
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: linmao-python-dev-pvc       #！！！改成自己的PVC名称，否则会修改到别人的PVC
+  namespace: dev                    #！！！一般开发环境就用dev，如果需要用在其他命名空间，就用相应的命名空间。注意，其他命名空间可能没配置好nfs对接所需的组件导致PVC绑定失败。
+spec:
+  accessModes:
+    - ReadWriteOnce                 
+  volumeMode: Filesystem            
+  resources:                        
+    requests:
+      storage: 40Gi
+  storageClassName: managed-nfs-storage             #必须和创建的storage class名字一致，如果有指定pv也要与PV保持一致，否则无法完成绑定
+---
+# 这个文件包含有两个PVC，下边是第二个。内容和第一个基本差不多。
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: linmao-python-dev-pvc-2
+  namespace: dev                  
+spec:
+  accessModes:
+    - ReadWriteOnce                 
+  volumeMode: Filesystem            
+  resources:                        
+    requests:
+      storage: 100Gi
+  storageClassName: managed-nfs-storage             
+---
+# 开发环境的节点的定义
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python311         # ！！！必须改成自己的名字
+  namespace: dev          # ！！！必须指定正确的命名空间
+spec:
+  selector:
+    matchLabels:
+      app: python311      # 必须和下边的metadata:label里的标签一致
+  replicas: 1             # 一个实例，开发节点不需要多实例
+  template:
+    metadata:
+      labels:
+        app: python311    # 必须和selector的内容一致
+    spec:
+      tolerations:        # 我们现在只有一台机器，所以全部节点都必须容忍这个master的污点。要不然不会启动。
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Equal"
+        effect: "NoSchedule"
+      volumes:
+      - name: pvc-data
+        persistentVolumeClaim:
+          claimName: linmao-python-dev-pvc          #与pvc中声明的name保持一致
+      - name: pvc-data-2
+        persistentVolumeClaim:
+          claimName: linmao-python-dev-pvc-2        #与pvc中声明的name保持一致
+      containers:
+      - name: python311
+        image: registry.cn-hangzhou.aliyuncs.com/hkust-qianmo/python311-ubuntu2004:1.0.15
+        volumeMounts:
+        - name: pvc-data
+          mountPath: /root/workspace
+        - name: pvc-data-2
+          mountPath: /root/data
+        ports:
+        - containerPort: 22
+        resources:
+          limits:
+            memory: 4096Mi
+            cpu: 4
+---
+# 通过一个loadballancer把节点的22(ssh)端口暴露出来
+kind: Service
+apiVersion: v1
+metadata:
+  name: python311-lb  # ！！！一定要改成自己的lb名字
+  namespace: dev      # ！！！使用正确的命名空间
+spec:
+  type: LoadBalancer
+  ports:
+    - name: ssh
+      port: 22
+  selector:
+    app: python311    #必须和deployment里的标签保持一致
